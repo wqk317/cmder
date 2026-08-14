@@ -1,18 +1,17 @@
 @echo off
 
 call "%~dp0lib_base.cmd"
-call "%%~dp0lib_console.cmd"
+call "%~dp0lib_console.cmd"
 set lib_git=call "%~dp0lib_git.cmd"
 
 if "%~1" == "/h" (
     %lib_base% help "%~0"
-) else if "%1" neq "" (
+) else if "%~1" neq "" (
     call :%*
 )
 
 exit /b
 
-:read_version
 :::===============================================================================
 :::read_version - Get the git.exe version
 :::.
@@ -34,6 +33,7 @@ exit /b
 :::  GIT_VERSION_[GIT SCOPE] <out> Env variable containing Git semantic version string
 :::-------------------------------------------------------------------------------
 
+:read_version
     :: clear the variables
     set GIT_VERSION_%~1=
 
@@ -55,6 +55,7 @@ exit /b
             set "GIT_VERSION=%%C"
         ) else (
             echo "'git --version' returned an improper version string!"
+            %print_debug% :read_version "returned string: '%%A %%B %%C' by executable path: %git_executable%"
             pause
             exit /b
         )
@@ -63,7 +64,6 @@ exit /b
 
     exit /b
 
-:parse_version
 :::===============================================================================
 :::parse_version - Parse semantic version string 'x.x.x.x' and return the pieces
 :::.
@@ -88,6 +88,7 @@ exit /b
 :::  [SCOPE]_BUILD <out> Scoped Build version.
 :::-------------------------------------------------------------------------------
 
+:parse_version
     :: process a `x.x.x.xxxx.x` formatted string
     %print_debug% :parse_version "ARGV[1]=%~1, ARGV[2]=%~2"
 
@@ -101,18 +102,17 @@ exit /b
 
     REM endlocal & set "%~1_MAJOR=!%~1_MAJOR!" & set "%~1_MINOR=!%~1_MINOR!" & set "%~1_PATCH=!%~1_PATCH!" & set "%~1_BUILD=!%~1_BUILD!"
     if "%~1" == "VENDORED" (
-      endlocal & set "%~1_MAJOR=%VENDORED_MAJOR%" & set "%~1_MINOR=%VENDORED_MINOR%" & set "%~1_PATCH=%VENDORED_PATCH%" & set "%~1_BUILD=%VENDORED_BUILD%"
+        endlocal & set "%~1_MAJOR=%VENDORED_MAJOR%" & set "%~1_MINOR=%VENDORED_MINOR%" & set "%~1_PATCH=%VENDORED_PATCH%" & set "%~1_BUILD=%VENDORED_BUILD%"
     ) else (
-      endlocal & set "%~1_MAJOR=%USER_MAJOR%" & set "%~1_MINOR=%USER_MINOR%" & set "%~1_PATCH=%USER_PATCH%" & set "%~1_BUILD=%USER_BUILD%"
+        endlocal & set "%~1_MAJOR=%USER_MAJOR%" & set "%~1_MINOR=%USER_MINOR%" & set "%~1_PATCH=%USER_PATCH%" & set "%~1_BUILD=%USER_BUILD%"
     )
 
     exit /b
 
 :endlocal_set_git_version
 
-:validate_version
 :::===============================================================================
-:::validate_version - Validate semantic version string 'x.x.x.x'.
+:::validate_version - Validate semantic version string 'x.x.x.x'
 :::.
 :::include:
 :::.
@@ -128,6 +128,7 @@ exit /b
 :::  [VERSION]   <in> Semantic version String. Ex: 1.2.3.4
 :::-------------------------------------------------------------------------------
 
+:validate_version
     :: now parse the version information into the corresponding variables
     %print_debug% :validate_version "ARGV[1]=%~1, ARGV[2]=%~2"
 
@@ -136,15 +137,14 @@ exit /b
     :: ... and maybe display it, for debugging purposes.
     REM %print_debug% :validate_version "Found Git Version for %~1: !%~1_MAJOR!.!%~1_MINOR!.!%~1_PATCH!.!%~1_BUILD!"
     if "%~1" == "VENDORED" (
-      %print_debug% :validate_version "Found Git Version for %~1: %VENDORED_MAJOR%.%VENDORED_MINOR%.%VENDORED_PATCH%.%VENDORED_BUILD%"
+        %print_debug% :validate_version "Found Git Version for %~1: %VENDORED_MAJOR%.%VENDORED_MINOR%.%VENDORED_PATCH%.%VENDORED_BUILD%"
     ) else (
-      %print_debug% :validate_version "Found Git Version for %~1: %USER_MAJOR%.%USER_MINOR%.%USER_PATCH%.%USER_BUILD%"
+        %print_debug% :validate_version "Found Git Version for %~1: %USER_MAJOR%.%USER_MINOR%.%USER_PATCH%.%USER_BUILD%"
     )
     exit /b
 
-:compare_versions
 :::===============================================================================
-:::compare_version - Compare semantic versions return latest version.
+:::compare_version - Compare semantic versions and return latest version
 :::.
 :::include:
 :::.
@@ -160,6 +160,7 @@ exit /b
 :::  [SCOPE2]    <in> Example: VENDOR
 :::-------------------------------------------------------------------------------
 
+:compare_versions
     :: checks all major, minor, patch and build variables for the given arguments.
     :: whichever binary that has the most recent version will be used based on the return code.
 
@@ -184,7 +185,12 @@ exit /b
     endlocal & exit /b 0
 
 :::===============================================================================
-:::is_git_shim
+:::is_git_shim - Check if the directory has a git.shim file
+:::.
+:::description:
+:::.
+:::  Shim is a small helper program for Scoop that calls the executable configured in git.shim file
+:::  See: github.com/ScoopInstaller/Shim and github.com/cmderdev/cmder/pull/1905
 :::.
 :::include:
 :::.
@@ -201,7 +207,7 @@ exit /b
 
 :is_git_shim
     pushd "%~1"
-    :: check if there's shim - and if yes follow the path
+    :: check if there is a shim file - if yes, read the actual executable path
     setlocal enabledelayedexpansion
     if exist git.shim (
         for /F "tokens=2 delims== " %%I in (git.shim) do (
@@ -218,7 +224,7 @@ exit /b
     exit /b
 
 :::===============================================================================
-:::compare_git_versions
+:::compare_git_versions - Compare the user git version against the vendored version
 :::.
 :::include:
 :::.
@@ -252,7 +258,7 @@ exit /b
         :: if the user provided git executable is not found
         IF ERRORLEVEL -255 IF NOT ERRORLEVEL -254 (
         :: if not exist "%git_executable%" (
-            %print_debug% ":compare_git_versions" "No git at "%git_executable%" found."
+            %print_debug% ":compare_git_versions" "No git at '%git_executable%' found."
             set test_dir=
         )
     )
@@ -261,7 +267,7 @@ exit /b
     exit /b
 
 :::===============================================================================
-:::get_user_git_version - get the version information for the user provided git binary
+:::get_user_git_version - Get the version information for the user provided git binary
 :::.
 :::include:
 :::.
@@ -277,5 +283,4 @@ exit /b
     %lib_git% read_version USER "%test_dir%" 2>nul
     %print_debug% ":get_user_git_version" "get_user_git_version GIT_VERSION_USER: %GIT_VERSION_USER%"
     %lib_git% validate_version USER %GIT_VERSION_USER%
-    exit  /b
-
+    exit /b

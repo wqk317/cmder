@@ -1,4 +1,4 @@
-function Ensure-Exists($path) {
+﻿function Ensure-Exists($path) {
     if (-not (Test-Path $path)) {
         Write-Error "Missing required $path! Ensure it is installed"
         exit 1
@@ -9,38 +9,81 @@ function Ensure-Exists($path) {
 function Ensure-Executable($command) {
     try { Get-Command $command -ErrorAction Stop > $null }
     catch {
-        If( ($command -eq "7z") -and (Test-Path "$env:programfiles\7-zip\7z.exe") ){
-            set-alias -Name "7z" -Value "$env:programfiles\7-zip\7z.exe" -Scope script
+        if( ($command -eq "7z") -and (Test-Path "$env:programfiles\7-zip\7z.exe") ){
+            Set-Alias -Name "7z" -Value "$env:programfiles\7-zip\7z.exe" -Scope script
         }
-        ElseIf( ($command -eq "7z") -and (Test-Path "$env:programw6432\7-zip\7z.exe") ) {
-            set-alias -Name "7z" -Value "$env:programw6432\7-zip\7z.exe" -Scope script
+        elseif( ($command -eq "7z") -and (Test-Path "$env:programw6432\7-zip\7z.exe") ) {
+            Set-Alias -Name "7z" -Value "$env:programw6432\7-zip\7z.exe" -Scope script
         }
-        Else {
+        else {
             Write-Error "Missing $command! Ensure it is installed and on in the PATH"
             exit 1
         }
     }
 }
 
+function Write-ColorOutput {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingWriteHost',
+        '',
+        Justification = 'This helper intentionally writes user-facing host UI when scripts need colored console status messages.'
+    )]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
+        [string]$Message,
+
+        [System.ConsoleColor]$ForegroundColor,
+
+        [System.ConsoleColor]$BackgroundColor,
+
+        [switch]$NoNewline
+    )
+
+    process {
+        $parameters = @{
+            Object = $Message
+        }
+
+        if ($PSBoundParameters.ContainsKey('ForegroundColor')) {
+            $parameters.ForegroundColor = $ForegroundColor
+        }
+
+        if ($PSBoundParameters.ContainsKey('BackgroundColor')) {
+            $parameters.BackgroundColor = $BackgroundColor
+        }
+
+        if ($NoNewline) {
+            $parameters.NoNewline = $true
+        }
+
+        Microsoft.PowerShell.Utility\Write-Host @parameters
+    }
+}
+
 function Delete-Existing($path) {
-    Write-Verbose "Remove $path"
-    Remove-Item -Recurse -force $path -ErrorAction SilentlyContinue
+    if (Test-Path $path) {
+        Write-Verbose "Remove existing $path"
+    }
+    Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
 }
 
 function Extract-Archive($source, $target) {
     Write-Verbose $("Extracting Archive '$cmder_root\vendor\" + $source.replace('/','\') + " to '$cmder_root\vendor\$target'")
     Invoke-Expression "7z x -y -o`"$($target)`" `"$source`"  > `$null"
-    if ($lastexitcode -ne 0) {
+    if ($LastExitCode -ne 0) {
         Write-Error "Extracting of $source failed"
     }
     Remove-Item $source
 }
 
 function Create-Archive($source, $target, $params) {
-    $command = "7z a -x@`"$source\packignore`" $params $target $source  > `$null"
-    Write-Verbose "Running: $command"
+    $command = "7z a -x@`"$source\packignore`" $params `"$target`" `"*`"  > `$null"
+    Write-Verbose "Creating Archive from '$source' in '$target' with parameters '$params'"
+    Push-Location $source
     Invoke-Expression $command
-    if ($lastexitcode -ne 0) {
+    Pop-Location
+    if ($LastExitCode -ne 0) {
         Write-Error "Compressing $source failed"
     }
 }
@@ -48,71 +91,98 @@ function Create-Archive($source, $target, $params) {
 # If directory contains only one child directory
 # Flatten it instead
 function Flatten-Directory($name) {
-    $child = (Get-Childitem $name)[0]
-    Rename-Item $name -NewName "$($name)_moving"
-    Move-Item -Path "$($name)_moving\$child" -Destination $name
-    Remove-Item -Recurse "$($name)_moving"
+    $name = Resolve-Path $name
+    $moving = "$($name)_moving"
+    Rename-Item $name -NewName $moving
+    Write-Verbose "Flattening the '$name' directory..."
+    $child = (Get-ChildItem $moving)[0] | Resolve-Path
+    Move-Item -Path $child -Destination $name
+    Remove-Item -Recurse $moving
 }
 
 function Digest-Hash($path) {
-    if(Get-Command Get-FileHash -ErrorAction SilentlyContinue){
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
         return (Get-FileHash -Algorithm SHA256 -Path $path).Hash
     }
 
     return Invoke-Expression "md5sum $path"
 }
 
-function Get-VersionStr() {
+function Set-GHVariable {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Writes GitHub Actions environment files in non-interactive CI; WhatIf/Confirm would not be meaningful.'
+    )]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
 
+    Write-Verbose "Setting CI variable $Name to $Value" -Verbose
+
+    if ($env:GITHUB_ENV) {
+        Write-Output "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    }
+}
+
+function Get-GHTempPath {
+    $temp = [System.IO.Path]::GetTempPath()
+    if ($env:RUNNER_TEMP) {
+        $temp = $env:RUNNER_TEMP
+    }
+
+    Write-Verbose "Get CI Temp path: $temp" -Verbose
+    return $temp
+}
+
+function Get-VersionStr {
     # Clear existing variable
     if ($string) { Clear-Variable -name string }
 
     # Determine if git is available
-    if (Get-Command "git.exe" -ErrorAction SilentlyContinue)
-    {
+    if (Get-Command "git.exe" -ErrorAction SilentlyContinue) {
+        # Determine if the current directory is a git repository
+        $GitPresent = Invoke-Expression "git rev-parse --is-inside-work-tree" -ErrorAction SilentlyContinue
 
-        # Determine if the current diesctory is a git repository
-        $GitPresent = Invoke-Expression "git rev-parse --is-inside-work-tree" -erroraction SilentlyContinue
-
-        if ( $GitPresent -eq 'true' )
-        {
+        if ( $GitPresent -eq 'true' ) {
             $string = Invoke-Expression "git describe --abbrev=0 --tags"
         }
-
     }
 
     # Fallback used when Git is not available
-    if ( -not($string) )
-    {
+    if ( -not($string) ) {
         $string = Parse-Changelog ($PSScriptRoot + '\..\' + 'CHANGELOG.md')
     }
 
     # Add build number, if AppVeyor is present
-    if ( $Env:APPVEYOR -eq 'True' )
-    {
+    if ( $Env:APPVEYOR -eq 'True' ) {
         $string = $string + '.' + $Env:APPVEYOR_BUILD_NUMBER
+    }
+    elseif ( $Env:GITHUB_ACTIONS -eq 'true' ) {
+        $string = $string + '.' + $Env:GITHUB_RUN_NUMBER
     }
 
     # Remove starting 'v' characters
     $string = $string -replace '^v+','' # normalize version string
 
     return $string
-
 }
 
 function Parse-Changelog($file) {
-
     # Define the regular expression to match the version string from changelog
     [regex]$regex = '^## \[(?<version>[\w\-\.]+)\]\([^\n()]+\)\s+\([^\n()]+\)$';
 
     # Find the first match of the version string which means the latest version
-    $version = Select-String -Path $file -Pattern $regex | Select-Object -First 1 | % { $_.Matches.Groups[1].Value }
+    $version = Select-String -Path $file -Pattern $regex | Select-Object -First 1 | ForEach-Object { $_.Matches.Groups[1].Value }
 
     return $version
 }
 
 function Create-RC($string, $path) {
-
     $version  = $string + '.0.0.0.0' # padding for version string
 
     if ( !(Test-Path "$path.sample") ) {
@@ -132,13 +202,12 @@ function Create-RC($string, $path) {
             $resource = $resource.Replace( "{" + $pattern[$index++] + "}", $fragment )
         }
     }
-    
+
     # Add the version string
     $resource = $resource.Replace( "{Cmder-Version-Str}", '"' + $string + '"' )
 
     # Write the results
     Set-Content -Path $path -Value $resource
-
 }
 
 function Register-Cmder() {
@@ -148,13 +217,13 @@ function Register-Cmder() {
         # Text for the context menu item.
         $MenuText = "Cmder Here"
 
-        , # Defaults to the current cmder directory when run from cmder.
+        , # Defaults to the current Cmder directory when run from Cmder.
         $PathToExe = (Join-Path $env:CMDER_ROOT "cmder.exe")
 
         , # Commands the context menu will execute.
         $Command = "%V"
 
-        , # Defaults to the icons folder in the cmder package.
+        , # Defaults to the icons folder in the Cmder package.
         $icon = (Split-Path $PathToExe | Join-Path -ChildPath 'icons/cmder.ico')
     )
     Begin
@@ -201,14 +270,225 @@ function Download-File {
         $File
     )
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    
-    # I think this is the problem
-    $File = $File -Replace "/", "\"
-    Write-Verbose "Downloading from $Url to $File"
+
+    $useBitTransfer = $null -ne (Get-Module -Name BitsTransfer -ListAvailable) -and ($PSVersionTable.PSVersion.Major -le 5)
+
+    $File = $File -replace "/", "\"
+
+    try {
+        if ($useBitTransfer) {
+            Start-BitsTransfer -Source $Url -Destination $File -DisplayName "Downloading '$Url' to $File"
+            return
+        }
+    }
+    catch {
+        Write-Error "Failed to download file using BITS, reason: $_`nUsing fallback method instead...`n" -ErrorAction:Continue
+    }
+
+    Write-Verbose "Downloading from $Url to $File`n"
+
     $wc = New-Object System.Net.WebClient
     if ($env:https_proxy) {
-      $wc.proxy = (New-Object System.Net.WebProxy($env:https_proxy))
+        $wc.proxy = (New-Object System.Net.WebProxy($env:https_proxy))
     }
-    $wc.Proxy.Credentials=[System.Net.CredentialCache]::DefaultNetworkCredentials;
+    $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials;
     $wc.DownloadFile($Url, $File)
+}
+
+function Format-FileSize {
+    <#
+    .SYNOPSIS
+    Formats a file size in bytes to a human-readable string using binary units.
+
+    .DESCRIPTION
+    Converts file sizes to appropriate binary units (B, KiB, MiB, GiB) for better readability.
+
+    .PARAMETER Bytes
+    The file size in bytes to format.
+
+    .EXAMPLE
+    Format-FileSize -Bytes 1024
+    Returns "1.00 KiB"
+
+    .EXAMPLE
+    Format-FileSize -Bytes 15728640
+    Returns "15.00 MiB"
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [double]$Bytes
+    )
+
+    if ($Bytes -ge 1GB) {
+        return "{0:N2} GiB" -f ($Bytes / 1GB)
+    } elseif ($Bytes -ge 1MB) {
+        return "{0:N2} MiB" -f ($Bytes / 1MB)
+    } elseif ($Bytes -ge 1KB) {
+        return "{0:N2} KiB" -f ($Bytes / 1KB)
+    } else {
+        return "{0:N0} B" -f $Bytes
+    }
+}
+
+function Get-VersionChangeType {
+    <#
+    .SYNOPSIS
+    Analyzes version changes using semantic versioning to determine the type of update and appropriate emoji.
+
+    .DESCRIPTION
+    Parses old and new version strings, compares them using semantic versioning rules,
+    and returns information about the change type, emoji indicator, and whether it's a major update.
+
+    .PARAMETER OldVersion
+    The previous version string (e.g., "1.2.3" or "2.52.0.windows.1").
+
+    .PARAMETER NewVersion
+    The new version string (e.g., "1.3.0" or "3.0.0.windows.1").
+
+    .OUTPUTS
+    Returns a hashtable with the following keys:
+    - ChangeType: "major", "minor", "patch", "downgrade", or "unknown"
+    - Emoji: The corresponding emoji indicator (🔥, 🚀, ⬆️, or 🔄)
+    - IsMajor: Boolean indicating if this is a major version update
+
+    .EXAMPLE
+    $result = Get-VersionChangeType -OldVersion "1.2.3" -NewVersion "2.0.0"
+    # Returns: @{ ChangeType = "major"; Emoji = "🔥"; IsMajor = $true }
+
+    .EXAMPLE
+    $result = Get-VersionChangeType -OldVersion "1.2.3" -NewVersion "1.3.0"
+    # Returns: @{ ChangeType = "minor"; Emoji = "🚀"; IsMajor = $false }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OldVersion,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NewVersion
+    )
+
+    $changeType = "unknown"
+    $emoji = "🔄"
+    $isMajor = $false
+
+    try {
+        # Handle versions with more than 4 parts and strip pre-release identifiers
+        $oldVerStr = $OldVersion.Split('-')[0]
+        $newVerStr = $NewVersion.Split('-')[0]
+
+        # Split by dots and take only numeric parts, first 4 max
+        $oldParts = $oldVerStr.Split('.') | Where-Object { $_ -match '^\d+$' } | Select-Object -First 4
+        $newParts = $newVerStr.Split('.') | Where-Object { $_ -match '^\d+$' } | Select-Object -First 4
+
+        # Ensure we have at least 2 parts (major.minor) for semantic versioning
+        if ($oldParts.Count -ge 2 -and $newParts.Count -ge 2) {
+            $oldVerParseable = $oldParts -join '.'
+            $newVerParseable = $newParts -join '.'
+
+            $oldVer = [System.Version]::Parse($oldVerParseable)
+            $newVer = [System.Version]::Parse($newVerParseable)
+
+            if ($newVer -lt $oldVer) {
+                $changeType = "downgrade"
+                # Don't set emoji for downgrades in this function - caller handles it
+            } elseif ($newVer.Major -gt $oldVer.Major) {
+                $changeType = "major"
+                $emoji = "🔥"
+                $isMajor = $true
+            } elseif ($newVer.Minor -gt $oldVer.Minor) {
+                $changeType = "minor"
+                $emoji = "🚀"
+            } elseif ($newVer -gt $oldVer) {
+                $changeType = "patch"
+                $emoji = "⬆️"
+            } else {
+                # No version increase detected (versions are equal)
+                $changeType = "unknown"
+                $emoji = "🔄"
+            }
+        } else {
+            # Not enough numeric parts for semantic versioning
+            throw "Not enough numeric version parts"
+        }
+    } catch {
+        # If semantic versioning fails, return unknown
+        $changeType = "unknown"
+        $emoji = "🔄"
+        $isMajor = $false
+    }
+
+    return @{
+        ChangeType = $changeType
+        Emoji = $emoji
+        IsMajor = $isMajor
+    }
+}
+
+function Get-ArtifactDownloadUrl {
+    <#
+    .SYNOPSIS
+    Retrieves the download URL for a GitHub Actions artifact with retry logic.
+
+    .DESCRIPTION
+    Uses the GitHub CLI to fetch artifact information from the GitHub API with automatic retries.
+    Falls back to returning $null if all attempts fail.
+
+    .PARAMETER ArtifactName
+    The name of the artifact to retrieve the download URL for.
+
+    .PARAMETER Repository
+    The GitHub repository in the format "owner/repo".
+
+    .PARAMETER RunId
+    The GitHub Actions workflow run ID.
+
+    .PARAMETER MaxRetries
+    Maximum number of retry attempts. Default is 3.
+
+    .PARAMETER DelaySeconds
+    Delay in seconds between retry attempts. Default is 2.
+
+    .EXAMPLE
+    Get-ArtifactDownloadUrl -ArtifactName "cmder.zip" -Repository "cmderdev/cmder" -RunId "123456789"
+
+    .EXAMPLE
+    Get-ArtifactDownloadUrl -ArtifactName "build-output" -Repository "owner/repo" -RunId "987654321" -MaxRetries 5 -DelaySeconds 3
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Repository,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunId,
+
+        [int]$MaxRetries = 3,
+        [int]$DelaySeconds = 2
+    )
+
+    for ($i = 0; $i -lt $MaxRetries; $i++) {
+        try {
+            # Use GitHub CLI to get artifact information
+            $artifactsJson = gh api "repos/$Repository/actions/runs/$RunId/artifacts" --jq ".artifacts[] | select(.name == `"$ArtifactName`")"
+
+            if ($artifactsJson) {
+                $artifact = $artifactsJson | ConvertFrom-Json
+                if ($artifact.id) {
+                    # Construct browser-accessible GitHub Actions artifact download URL
+                    # Format: https://github.com/owner/repo/actions/runs/{run_id}/artifacts/{artifact_id}
+                    return "https://github.com/$Repository/actions/runs/$RunId/artifacts/$($artifact.id)"
+                }
+            }
+        } catch {
+            Write-Warning "Attempt $($i + 1) failed to get artifact URL for $ArtifactName : $_"
+        }
+
+        if ($i -lt ($MaxRetries - 1)) {
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+
+    return $null
 }

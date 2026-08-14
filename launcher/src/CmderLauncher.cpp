@@ -105,7 +105,19 @@ bool FileExists(const wchar_t * filePath)
 	return false;
 }
 
-void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstring taskName = L"", std::wstring iconPath = L"", std::wstring cfgRoot = L"", bool use_user_cfg = true, std::wstring conemu_args = L"")
+std::wstring NormalizeTaskName(std::wstring taskName)
+{
+	// ConEmu task labels are commonly passed as "{task}" on the command line.
+	// Strip the outer braces so we do not add a second pair later when building /run.
+	if (taskName.length() > 1 && taskName.front() == L'{' && taskName.back() == L'}')
+	{
+		return taskName.substr(1, taskName.length() - 2);
+	}
+
+	return taskName;
+}
+
+void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstring taskName = L"", std::wstring title = L"", std::wstring iconPath = L"", std::wstring cfgRoot = L"", bool use_user_cfg = true, std::wstring conemu_args = L"")
 {
 #if USE_TASKBAR_API
 	wchar_t appId[MAX_PATH] = { 0 };
@@ -132,6 +144,8 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 
 	std::wstring cmderStart = path;
 	std::wstring cmderTask = taskName;
+	cmderTask = NormalizeTaskName(cmderTask);
+	std::wstring cmderTitle = title;
 	std::wstring cmderConEmuArgs = conemu_args;
 
 	std::copy(cfgRoot.begin(), cfgRoot.end(), userConfigDirPath);
@@ -192,7 +206,7 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 			userAliasesPath, (size_t)MAX_PATH);
 		rename(lPr, pR);
 	}
-	
+
 	/*
 	Was /c [path] specified?
 	*/
@@ -308,7 +322,7 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 			ExpandEnvironmentStrings(userConEmuCfgPath, userConEmuCfgPath, sizeof(userConEmuCfgPath) / sizeof(userConEmuCfgPath[0]));
 		}
 	}
-	else if (PathFileExists(userCfgPath)) // config/user_conemu.xml exists, use it. 
+	else if (PathFileExists(userCfgPath)) // config/user_conemu.xml exists, use it.
 	{
 		if (cfgRoot.length() == 0) // '/c [path]' was NOT specified
 		{
@@ -412,7 +426,7 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 		PathCombine(conEmuPath, exeDir, L"vendor\\conemu-maximus5\\ConEmu.exe");
 	}
 
-	swprintf_s(args, L"%s /Icon \"%s\" /Title Cmder", args, icoPath);
+	swprintf_s(args, L"%s /Icon \"%s\"", args, icoPath);
 
 	if (!streqi(cmderStart.c_str(), L""))
 	{
@@ -424,9 +438,9 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 		swprintf_s(args, L"%s /single", args);
 	}
 
-	if (!streqi(cmderTask.c_str(), L""))
+	if (!streqi(cmderTitle.c_str(), L""))
 	{
-		swprintf_s(args, L"%s /run {%s}", args, cmderTask.c_str());
+		swprintf_s(args, L"%s /title \"%s\"", args, cmderTitle.c_str());
 	}
 
 	if (cfgRoot.length() != 0)
@@ -437,6 +451,14 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 	if (!streqi(cmderConEmuArgs.c_str(), L""))
 	{
 		swprintf_s(args, L"%s %s", args, cmderConEmuArgs.c_str());
+	}
+
+	// The `/run` arg and its value MUST be the last arg of ConEmu
+	// see : https://conemu.github.io/en/ConEmuArgs.html
+	// > This must be the last used switch (excepting -new_console and -cur_console)
+	if (!streqi(cmderTask.c_str(), L""))
+	{
+		swprintf_s(args, L"%s /run {%s}", args, cmderTask.c_str());
 	}
 
 	SetEnvironmentVariable(L"CMDER_ROOT", exeDir);
@@ -460,9 +482,6 @@ void StartCmder(std::wstring  path = L"", bool is_single_mode = false, std::wstr
 		MessageBox(NULL, _T("Unable to create the ConEmu process!"), _T("Error"), MB_OK);
 		return;
 	}
-
-	LRESULT lr = SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)"Environment", SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 5000, NULL);
-	lr = SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"Environment", SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 5000, NULL); // For Windows >= 8
 }
 
 bool IsUserOnly(std::wstring opt)
@@ -574,6 +593,7 @@ struct cmderOptions
 	std::wstring cmderCfgRoot = L"";
 	std::wstring cmderStart = L"";
 	std::wstring cmderTask = L"";
+	std::wstring cmderTitle = L"Cmder";
 	std::wstring cmderIcon = L"";
 	std::wstring cmderRegScope = L"USER";
 	std::wstring cmderConEmuArgs = L"";
@@ -634,6 +654,11 @@ cmderOptions GetOption()
 			else if (_wcsicmp(L"/task", szArgList[i]) == 0)
 			{
 				cmderOptions.cmderTask = szArgList[i + 1];
+				i++;
+			}
+			else if (_wcsicmp(L"/title", szArgList[i]) == 0)
+			{
+				cmderOptions.cmderTitle = szArgList[i + 1];
 				i++;
 			}
 			else if (_wcsicmp(L"/icon", szArgList[i]) == 0)
@@ -764,7 +789,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	}
 	else
 	{
-		StartCmder(cmderOptions.cmderStart, cmderOptions.cmderSingle, cmderOptions.cmderTask, cmderOptions.cmderIcon, cmderOptions.cmderCfgRoot, cmderOptions.cmderUserCfg, cmderOptions.cmderConEmuArgs);
+		StartCmder(cmderOptions.cmderStart, cmderOptions.cmderSingle, cmderOptions.cmderTask, cmderOptions.cmderTitle, cmderOptions.cmderIcon, cmderOptions.cmderCfgRoot, cmderOptions.cmderUserCfg, cmderOptions.cmderConEmuArgs);
 	}
 
 	return 0;
